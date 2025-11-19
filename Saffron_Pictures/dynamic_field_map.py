@@ -44,6 +44,7 @@ def sort_key(path):
 # Load data
 # -------------------------------
 csv_path = r'C:\Users\Alex R. Williams\Pictures\Saffron Data\10-27_11pm\captures10-27_11pm.csv'
+# csv_path = r'C:\Users\Alex R. Williams\Pictures\Saffron Data\calibrate\captures.csv'
 df = pd.read_csv(csv_path, low_memory=False)
 
 df = df.dropna(subset=['latitude', 'longitude'])
@@ -90,7 +91,7 @@ hist_smooth = gaussian_filter1d(hist.astype(float), sigma=2.0)  # sigma ≈ 14 c
 
 # Adaptive prominence – columns with ≥ ~8–10% of the tallest peak are kept
 max_height = hist_smooth.max()
-min_prominence = max(8, max_height * 0.08)   # tweak 0.08 only if needed
+min_prominence = max(1, max_height * 0.08)   # tweak 0.08 only if needed
 
 # minimum spacing ≈ 30 cm to kill spurious peaks
 min_distance_bins = int(0.30 / bin_width_m)   # ~4–5 bins

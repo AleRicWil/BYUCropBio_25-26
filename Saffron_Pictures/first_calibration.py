@@ -1,86 +1,103 @@
-import cv2
 import numpy as np
+import json
+from pathlib import Path
 
-# Step 1: Define constants from your setup
-# Grid size from your PDF (e.g., num_cols x num_rows squares, but we use inner corners: (num_cols-1) x (num_rows-1))
-# Example: For 100cm x 60cm at 2cm squares -> 50x30 squares -> 49x29 corners (adjust based on your generate_checkerboard_pdf call)
-pattern_size = (49, 29)  # (width-1, height-1) in corners; width=cols (numbers), height=rows (letters)
-square_size_cm = 2.0  # From your pattern
+def load_intersections(json_path):
+    """
+    Loads the snapped intersections from the JSON file.
+    Returns a list of dictionaries with 'name' and 'point' [x, y].
+    """
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    return data['intersections']
 
-# Step 2: Load intrinsics from datasheet (example placeholders; replace with yours)
-# K: 3x3 intrinsic matrix [fx 0 cx; 0 fy cy; 0 0 1]
-# dist_coeffs: [k1, k2, p1, p2, k3] for radial/tangential distortion
-K_left = np.array([[fx_left, 0, cx_left], [0, fy_left, cy_left], [0, 0, 1]], dtype=np.float32)
-dist_left = np.array([k1_left, k2_left, p1_left, p2_left, k3_left], dtype=np.float32)
+def get_world_point(name, origin_char='A', origin_row=0, step=2.0):
+    """
+    Computes the world coordinates (X, Y) in cm for a given grid name like 'B-21'.
+    Assumes columns are characters starting from origin_char (e.g., 'A' = 0),
+    rows are integers starting from origin_row (e.g., 0 = 0 cm).
+    X increases with column index, Y increases with row index.
+    """
+    col_char, row_str = name.split('-')
+    col_idx = ord(col_char) - ord(origin_char)
+    row_idx = int(row_str) - origin_row
+    X = col_idx * step
+    Y = row_idx * step
+    return np.array([X, Y])
 
-K_middle = np.array([[fx_middle, 0, cx_middle], [0, fy_middle, cy_middle], [0, 0, 1]], dtype=np.float32)
-dist_middle = np.array([k1_middle, k2_middle, p1_middle, p2_middle, k3_middle], dtype=np.float32)
-
-K_right = np.array([[fx_right, 0, cx_right], [0, fy_right, cy_right], [0, 0, 1]], dtype=np.float32)
-dist_right = np.array([k1_right, k2_right, p1_right, p2_right, k3_right], dtype=np.float32)
-
-# Image file paths (from your capture)
-img_left_path = 'left.jpg'
-img_middle_path = 'middle.jpg'
-img_right_path = 'right.jpg'
-
-# Step 3: Generate 3D object points (world coordinates, in cm)
-# Corners: from (0,0,0) bottom-left, x along columns (numbers), y along rows (letters), z=0 plane
-objp = np.zeros((pattern_size[0] * pattern_size[1], 3), np.float32)
-objp[:, :2] = np.mgrid[0:pattern_size[0], 0:pattern_size[1]].T.reshape(-1, 2) * square_size_cm
-# Key concept: This assumes row-major ordering matching detection; labels help verify visually
-
-# Step 4: Function to detect corners and compute pose for one camera
-def compute_pose(img_path, K, dist):
-    img = cv2.imread(img_path)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+def estimate_homography(image_points, world_points):
+    """
+    Estimates the 3x3 homography matrix H such that image_pt ~ H @ [world_x, world_y, 1].
+    Uses least-squares solution via SVD.
+    Requires at least 4 point correspondences.
+    Returns H (normalized so H[2,2] = 1).
+    """
+    assert len(image_points) == len(world_points) >= 4, "Need at least 4 points"
     
-    # Find corners (sub-pixel refinement for accuracy)
-    ret, corners = cv2.findChessboardCorners(gray, pattern_size, None)
-    if ret:
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-        corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-        
-        # Undistort corners if distortion is significant
-        corners_undist = cv2.undistortPoints(corners, K, dist, P=K)
-        corners_undist = np.squeeze(corners_undist)  # To 2D
-        
-        # Solve PnP for extrinsics (R, t)
-        # Key concept: Uses objp (3D) and corners (2D) to estimate pose via iterative method
-        ret, rvec, tvec = cv2.solvePnP(objp, corners, K, dist)
-        if ret:
-            R, _ = cv2.Rodrigues(rvec)  # Convert rotation vector to matrix
-            return R, tvec
-        else:
-            print(f"PnP failed for {img_path}")
-            return None, None
+    A = []
+    for (u, v), (X, Y) in zip(image_points, world_points):
+        A.append([X, Y, 1, 0, 0, 0, -u * X, -u * Y, -u])
+        A.append([0, 0, 0, X, Y, 1, -v * X, -v * Y, -v])
+    
+    A = np.array(A)
+    U, S, Vt = np.linalg.svd(A)
+    h = Vt[-1, :]
+    H = h.reshape(3, 3)
+    if abs(H[2, 2]) > 1e-6:
+        H /= H[2, 2]
     else:
-        print(f"Checkerboard not found in {img_path}")
-        return None, None
+        raise ValueError("Homography estimation failed (singular matrix)")
+    
+    return H
 
-# Step 5: Compute poses for each camera
-R_left, t_left = compute_pose(img_left_path, K_left, dist_left)
-R_middle, t_middle = compute_pose(img_middle_path, K_middle, dist_middle)
-R_right, t_right = compute_pose(img_right_path, K_right, dist_right)
+def compute_reprojection_error(image_points, world_points, H):
+    """
+    Computes the mean reprojection error in pixels.
+    Useful for verifying the quality of the homography.
+    """
+    errors = []
+    for (u, v), (X, Y) in zip(image_points, world_points):
+        world_hom = np.array([X, Y, 1])
+        projected = H @ world_hom
+        projected /= projected[2] if abs(projected[2]) > 1e-6 else 1
+        error = np.hypot(projected[0] - u, projected[1] - v)
+        errors.append(error)
+    return np.mean(errors)
 
-# Step 6: Compute relative extrinsics (e.g., left relative to middle)
-# Key concept: Relative pose = target_pose * source_pose.inv()
-# For stereo: Use these in triangulation or stereoRectify
-if R_left is not None and R_middle is not None:
-    R_left_to_middle = np.dot(R_middle, np.linalg.inv(R_left))
-    t_left_to_middle = t_middle - np.dot(R_left_to_middle, t_left)
-    print("Left to Middle Relative R:\n", R_left_to_middle)
-    print("Left to Middle Relative t:\n", t_left_to_middle)
+def compute_projection_matrix(json_path, origin_char='A', origin_row=0, step=2.0):
+    """
+    Main function to compute the homography (projection matrix) for a single image.
+    - Loads intersections from JSON.
+    - Maps names to world coordinates.
+    - Estimates homography H (world to image).
+    - Computes and prints reprojection error.
+    - Returns H and the base name for saving.
+    """
+    intersections = load_intersections(json_path)
+    image_points = np.array([inter['point'] for inter in intersections], dtype=float)
+    world_points = np.array([get_world_point(inter['name'], origin_char, origin_row, step) for inter in intersections], dtype=float)
+    
+    H = estimate_homography(image_points, world_points)
+    
+    error = compute_reprojection_error(image_points, world_points, H)
+    print(f"Reprojection error for {json_path}: {error:.2f} pixels")
+    
+    base_name = Path(json_path).stem.replace('_intersections_corrected', '')
+    return H, base_name
 
-if R_middle is not None and R_right is not None:
-    R_middle_to_right = np.dot(R_right, np.linalg.inv(R_middle))
-    t_middle_to_right = t_right - np.dot(R_middle_to_right, t_middle)
-    print("Middle to Right Relative R:\n", R_middle_to_right)
-    print("Middle to Right Relative t:\n", t_middle_to_right)
+# Example usage for left, middle, right images
+# Adjust paths and parameters (origin_char, origin_row) based on your grid labeling
+left_json = 'left_intersections_corrected.json'
+middle_json = 'middle_intersections_corrected.json'
+right_json = 'right_intersections_corrected.json'
 
-# Optional: Visualize detections (comment out to run)
-# cv2.drawChessboardCorners(img_left, pattern_size, corners, ret)  # Repeat for each
+H_left, base_left = compute_projection_matrix(left_json)
+H_middle, base_middle = compute_projection_matrix(middle_json)
+H_right, base_right = compute_projection_matrix(right_json)
 
-# Step 7: Save extrinsics (e.g., for later use in 3D reconstruction)
-np.savez('extrinsics.npz', R_left=R_left, t_left=t_left, R_middle=R_middle, t_middle=t_middle,
-         R_right=R_right, t_right=t_right)
+# Save the matrices (e.g., for later use in warping other images)
+np.save(f'{base_left}_homography.npy', H_left)
+np.save(f'{base_middle}_homography.npy', H_middle)
+np.save(f'{base_right}_homography.npy', H_right)
+
+print("Homography matrices saved. To apply to other images, load H and use matrix multiplication for point projection or implement image warping.")
