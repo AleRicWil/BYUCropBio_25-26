@@ -203,12 +203,12 @@ def process_frame(triplet, maps, out_shapes, example_shapes, flat_dir, original_
     original_composite = np.hstack(originals)
 
     # Save flat (warped)
-    flat_path = Path(flat_dir) / f"stitched_{frame_idx}_flat.jpg"
+    flat_path = Path(flat_dir) / f"{frame_idx}_flat.jpg"
     cv2.imwrite(str(flat_path), flat_composite)
     print(f"Saved {flat_path}")
 
     # Save original
-    original_path = Path(original_dir) / f"stitched_{frame_idx}_original.jpg"
+    original_path = Path(original_dir) / f"{frame_idx}_original.jpg"
     cv2.imwrite(str(original_path), original_composite)
     print(f"Saved {original_path}")
 

@@ -43,7 +43,7 @@ def sort_key(path):
 # -------------------------------
 # Load data
 # -------------------------------
-csv_path = r'C:\Users\Alex R. Williams\Pictures\Saffron Data\10-27_11pm\captures10-27_11pm.csv'
+csv_path = r'C:\Users\Alex R. Williams\Pictures\Saffron Data\10-28_first_part\captures.csv'
 # csv_path = r'C:\Users\Alex R. Williams\Pictures\Saffron Data\calibrate\captures.csv'
 df = pd.read_csv(csv_path, low_memory=False)
 
@@ -54,7 +54,7 @@ def get_image_path(row):
     camera = row['camera']
     timestamp = row['timestamp']
     filename = f"{camera}_color_{timestamp}.jpg"
-    folder = rf"C:\Users\Alex R. Williams\Pictures\Saffron Data\10-27_11pm\{camera}"
+    folder = rf"C:\Users\Alex R. Williams\Pictures\Saffron Data\10-28_first_part\{camera}"
     return os.path.join(folder, filename)
 
 df['image_path'] = df.apply(get_image_path, axis=1)
