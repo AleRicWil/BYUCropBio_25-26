@@ -28,8 +28,8 @@ def generate_flower_data(dist=6, sigma=(1.4, 2.5)):
 
 if __name__ == "__main__":
 
-    dist = 9
-    sigma = (1.4, 5)
+    dist = 6
+    sigma = (1.4, 2.5)
 
     points, sigmas, known_landmarks = generate_flower_data(dist, sigma)
 
