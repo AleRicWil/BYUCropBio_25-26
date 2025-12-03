@@ -72,7 +72,7 @@ def plotpoints(allpoints, mu):
             plt.scatter(point[0], point[1], color='white', s=2, label = 'landmark')
 
 
-csvpath  = r"D:/working_data/fullgpscsv.csv"
+csvpath  = r"../fullgpscsv.csv"
 start = time.time()
 df = pd.read_csv(csvpath)
 
