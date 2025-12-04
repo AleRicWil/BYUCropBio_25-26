@@ -1,8 +1,9 @@
-
-
+import numpy as np
+from pathlib import Path
+import pandas as pd
+import os
 
 def view_matrices():
-    import numpy as np
     from pathlib import Path
 
     def load_and_display_homography(npy_path):
@@ -34,7 +35,6 @@ def view_matrices():
         load_and_display_homography(path)
 
 def save_masked_CSV():
-    import pandas as pd
     from pathlib import Path
 
     # Specify the full path to the input CSV file here
@@ -72,7 +72,6 @@ def save_masked_CSV():
     print(f"Filtered {len(filtered_df)} rows with flowers to {output_path}")
 
 def save_CSV_by_day():
-    import pandas as pd
     from pathlib import Path
     import os
 
@@ -143,7 +142,91 @@ def save_CSV_by_day():
     for date_str in sorted(created_files):
         print(f" - flowers_{date_str}.csv")
 
+def save_CSV_by_session():
+    """
+    Splits each daily flowers_YYYYMMDD.csv file into separate CSVs based on the 'sourceFolder' column,
+    which identifies the time of day or session (e.g., '10-25_10pm'). This function scans the directory
+    for all daily CSVs, processes each one efficiently (using chunking for large files), groups by
+    'sourceFolder', extracts the part after the day (after the underscore) as suffix, and saves outputs 
+    as flowers_YYYYMMDD_suffix.csv (e.g., flowers_20251026_10pm.csv).
+
+    This is designed for efficient execution on large datasets from robotic localization and mapping
+    tasks using color camera sensors, where sensor logs can be voluminous. Chunking minimizes memory
+    usage, and vectorized operations ensure speed.
+    """
+    # Specify the directory containing the daily CSVs (e.g., from save_CSV_by_day)
+    # This can be altered directly in the IDE before running
+    csv_dir = r"D:\CSVs"
+
+    # Convert to Path for easy handling
+    dir_path = Path(csv_dir)
+    if not dir_path.exists():
+        raise FileNotFoundError(f"Directory not found: {dir_path}")
+
+    # Find all daily CSV files matching 'flowers_YYYYMMDD.csv'
+    daily_files = list(dir_path.glob('flowers_*.csv'))
+    daily_files = [f for f in daily_files if len(f.stem) == 16 and f.stem[8:].isdigit()]  # Validate YYYYMMDD
+
+    if not daily_files:
+        print("No daily CSV files found in the directory.")
+        return
+
+    # Process each daily file
+    for daily_path in daily_files:
+        date_str = daily_path.stem[8:]  # Extract YYYYMMDD
+        print(f"Processing daily file: {daily_path}")
+
+        # Efficiently process in chunks to handle large daily files
+        chunksize = 10**6  # Adjust based on RAM; suitable for large sensor datasets
+        created_sessions = set()  # Track sessions for this day to handle appends
+
+        # Read and process in chunks
+        for chunk in pd.read_csv(daily_path, chunksize=chunksize, low_memory=False):
+            # Drop rows with NaN in 'sourceFolder'
+            chunk = chunk[chunk['sourceFolder'].notna()]
+
+            # Group by 'sourceFolder' within the chunk
+            grouped = chunk.groupby('sourceFolder')
+
+            # For each group (session), save or append to respective CSV
+            for session_str, group in grouped:
+                # Extract the suffix after the day (part after underscore)
+                parts = session_str.split('_')
+                if len(parts) > 1:
+                    suffix = '_'.join(parts[1:])  # Join in case there are multiple underscores
+                else:
+                    suffix = session_str  # Fallback if no underscore
+
+                # Sanitize suffix for filename (replace invalid chars)
+                safe_suffix = suffix.replace('/', '_').replace('\\', '_').replace(':', '_')
+
+                # Define output path: e.g., flowers_YYYYMMDD_10pm.csv
+                output_path = dir_path / f'flowers_{date_str}_{safe_suffix}.csv'
+
+                # Check if file already exists
+                file_exists = output_path.exists()
+
+                # Append mode if exists (no header), else write with header
+                group.to_csv(output_path, mode='a' if file_exists else 'w',
+                             header=not file_exists, index=False)
+
+                # Track created sessions (using original session_str for summary)
+                if not file_exists:
+                    created_sessions.add(session_str)
+
+        # Print summary for this day
+        print(f"Split {daily_path} into {len(created_sessions)} session CSVs:")
+        for session_str in sorted(created_sessions):
+            parts = session_str.split('_')
+            if len(parts) > 1:
+                suffix = '_'.join(parts[1:])
+            else:
+                suffix = session_str
+            safe_suffix = suffix.replace('/', '_').replace('\\', '_').replace(':', '_')
+            print(f" - flowers_{date_str}_{safe_suffix}.csv")
+
 if __name__ == "__main__":
     # view_matrices()
-    # save_masked_CSV()
+    save_masked_CSV()
     save_CSV_by_day()
+    save_CSV_by_session()
