@@ -25,6 +25,9 @@ DEFAULT_IMAGE_FOLDER = r"D:\boxed"
 # Temp folder settings
 NUM_TEMP_FOLDERS = 5  # Number of rotating temp folders (temp_00 to temp_04)
 
+# Data Association settings
+MAHALONOBIS_THRESHOLD = 8.0
+
 # Plot settings
 BASE_FIGURE_SIZE = 8.0  # Base size for figure dimensions (scales with aspect ratio)
 BUFFER_FACTOR = 0.1  # Buffer around data range as fraction of max range
@@ -34,7 +37,7 @@ BOTTOM_MARGIN = 0.03  # Bottom subplot margin (increased for labels)
 TOP_MARGIN = 0.97  # Top subplot margin
 DOT_MARKER_SIZE = 5  # Size of red centroid dots
 LINE_WIDTH = 1  # Width of connecting lines
-SCATTER_MARKER_SIZE = 1  # Size of scatter points in main plot
+SCATTER_MARKER_SIZE = 10  # Size of scatter points in main plot
 SCATTER_ALPHA = 0.7  # Transparency of scatter points
 
 # Thumbnail settings
@@ -405,11 +408,18 @@ class FlowerViewer(tk.Tk):
         if not self.point_uncertainty_list:
             messagebox.showwarning("No Data", "Please load data first.")
             return
+        self.update_status(f"Running association with MAH_thesh={MAHALONOBIS_THRESHOLD}...")
+        # CRITICAL: Force immediate UI repaint so user sees the status instantly
+        self.update_idletasks()   # Process pending idle tasks (e.g. redraw status label)
+        self.status_label.config(foreground="red", font=("Arial", 10, "bold"))
+        self.update()             # Full update — forces repaint of entire window
+
         start = time.time()
-        self.mu, self.allpoints = associate_landmarks(self.point_uncertainty_list)  # Efficient: vectorized, reuses pre-parsed list
+        self.mu, self.allpoints = associate_landmarks(self.point_uncertainty_list, MAH_threshold=MAHALONOBIS_THRESHOLD)  # Efficient: vectorized, reuses pre-parsed list
         self.association_done = True
         elapsed = time.time() - start
         self.update_status(f"Data association completed in {elapsed:.2f} seconds. Detected {len(self.mu)} landmarks.")
+        self.status_label.config(foreground="black", font=("Arial", 10))
 
     def plot_flowers(self):
         """
@@ -506,7 +516,7 @@ class FlowerViewer(tk.Tk):
         self.ax = self.fig.add_subplot(111)
         
         # Scatter plot
-        self.ax.scatter(self.all_x_m, self.all_y_m, marker='.', s=SCATTER_MARKER_SIZE, alpha=SCATTER_ALPHA)
+        self.ax.scatter(self.all_x_m, self.all_y_m, s=SCATTER_MARKER_SIZE, alpha=SCATTER_ALPHA, label='Single-obs Landmark')
 
         # If association done, add landmarks and lines (efficient, vectorized)
         if self.association_done:
@@ -524,7 +534,7 @@ class FlowerViewer(tk.Tk):
             
             # Plot landmarks: separate scatters for different colors/labels
             multi_obs = frequency > 1
-            self.ax.scatter(mu_x[multi_obs], mu_y[multi_obs], s=10, c='blue', marker='x', label='Multi-obs Landmark')
+            self.ax.scatter(mu_x[multi_obs], mu_y[multi_obs], s=SCATTER_MARKER_SIZE*2, c='red', label='Multi-obs Landmark')
             # single_obs = frequency == 1
             # self.ax.scatter(mu_x[single_obs], mu_y[single_obs], s=10, c='orange', marker='x', label='Single-obs Landmark')
             
@@ -542,6 +552,7 @@ class FlowerViewer(tk.Tk):
         self.ax.set_xlabel("East-West (meters)")
         self.ax.set_ylabel("North-South (meters)")
         self.ax.set_title(f"Flower Locations ({len(self.flower_locations)} points) - Selected: {formatted_items}")
+        self.ax.legend()
         
         # Adjust subplot margins
         self.fig.subplots_adjust(left=LEFT_MARGIN, right=RIGHT_MARGIN, bottom=BOTTOM_MARGIN, top=TOP_MARGIN)

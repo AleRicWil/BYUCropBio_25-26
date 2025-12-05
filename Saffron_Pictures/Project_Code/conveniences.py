@@ -3,6 +3,8 @@ from pathlib import Path
 import pandas as pd
 import os
 
+CSVs_PATH = r"D:\CSVs"
+
 def view_matrices():
     from pathlib import Path
 
@@ -39,7 +41,7 @@ def save_masked_CSV():
 
     # Specify the full path to the input CSV file here
     # This can be altered directly in the IDE before running
-    input_csv = r"D:\CSVs\fullgps.csv"
+    input_csv = CSVs_PATH + r'\fullgps.csv'
 
     # Extract input path and directory
     input_path = Path(input_csv)
@@ -78,7 +80,7 @@ def save_CSV_by_day():
     # Specify the full path to the input CSV file here (flowers_only.csv from previous script)
     # This can be altered directly in the IDE before running
     # Example: "D:\\flowers_only.csv"
-    input_csv = r"D:\CSVs\flowers_only.csv"
+    input_csv = CSVs_PATH + r'\flowers_only.csv'
 
     # Extract input path and directory
     input_path = Path(input_csv)
@@ -156,7 +158,7 @@ def save_CSV_by_session():
     """
     # Specify the directory containing the daily CSVs (e.g., from save_CSV_by_day)
     # This can be altered directly in the IDE before running
-    csv_dir = r"D:\CSVs"
+    csv_dir = CSVs_PATH
 
     # Convert to Path for easy handling
     dir_path = Path(csv_dir)

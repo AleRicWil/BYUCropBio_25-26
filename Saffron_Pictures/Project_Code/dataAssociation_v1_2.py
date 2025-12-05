@@ -93,7 +93,7 @@ def plotpoints(allpoints, mu, plotLine=True, plot_in_meters=False):
     
     plt.axis('equal')
 
-def associate_landmarks(input_data):
+def associate_landmarks(input_data, MAH_threshold=8.0):
     mu = []  # List of landmark means (in lat/lon degrees)
     Sigma = []  # List of landmark covariances
     allpoints = []
@@ -127,7 +127,7 @@ def associate_landmarks(input_data):
             sigma_lon = unc / (METERS_PER_DEG_LAT * cos_lat)
             Sigma_bar = np.diag([sigma_lat**2, sigma_lon**2])
             
-            association = associateData(point, mu, Sigma_bar)
+            association = associateData(point, mu, Sigma_bar, thresh=MAH_threshold)
             if association[0] == -1:
                 allpoints.append([point, len(mu)])
                 mu.append(point)
