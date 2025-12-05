@@ -11,7 +11,7 @@ def Mahalanobis(landmark, estimate, Sigma):
     
     return M
 
-def associateData(estimate, mu, Sigma, thresh = .5):
+def associateData(estimate, mu, Sigma, thresh = 5):
     association = []
     # lat, lon = z
     if len(mu) == 0:

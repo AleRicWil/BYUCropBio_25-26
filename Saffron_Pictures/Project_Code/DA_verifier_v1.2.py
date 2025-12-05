@@ -507,6 +507,33 @@ class FlowerViewer(tk.Tk):
         
         # Scatter plot
         self.ax.scatter(self.all_x_m, self.all_y_m, marker='.', s=SCATTER_MARKER_SIZE, alpha=SCATTER_ALPHA)
+
+        # If association done, add landmarks and lines (efficient, vectorized)
+        if self.association_done:
+            from matplotlib.collections import LineCollection
+            points = np.array([p[0] for p in self.allpoints])  # (n, 2): lat, lon
+            idxs = np.array([p[1] for p in self.allpoints], dtype=int)
+            mu_arr = np.array(self.mu)  # (m, 2): lat, lon
+            
+            # Compute frequency using bincount for O(n) efficiency
+            frequency = np.bincount(idxs, minlength=len(mu_arr))
+            
+            # Convert landmarks to meters
+            mu_x = (mu_arr[:, 1] - ref_lon) * meters_per_deg_lon
+            mu_y = (mu_arr[:, 0] - ref_lat) * meters_per_deg_lat
+            
+            # Plot landmarks: separate scatters for different colors/labels
+            multi_obs = frequency > 1
+            self.ax.scatter(mu_x[multi_obs], mu_y[multi_obs], s=10, c='blue', marker='x', label='Multi-obs Landmark')
+            # single_obs = frequency == 1
+            # self.ax.scatter(mu_x[single_obs], mu_y[single_obs], s=10, c='orange', marker='x', label='Single-obs Landmark')
+            
+            # Plot associations as a LineCollection for efficiency with many lines
+            starts = np.column_stack((self.all_x_m, self.all_y_m))
+            ends = np.column_stack((mu_x[idxs], mu_y[idxs]))
+            segments = np.stack((starts, ends), axis=1)  # shape (n, 2, 2)
+            lc = LineCollection(segments, colors='gray', linewidths=0.5, alpha=1.0, label='association')
+            self.ax.add_collection(lc)
         
         # Set equal aspect ratio
         self.ax.set_aspect('equal', adjustable='datalim')
