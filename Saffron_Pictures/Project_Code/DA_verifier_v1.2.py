@@ -14,6 +14,9 @@ from PIL import Image, ImageTk
 import shutil
 import os
 import time
+import random
+
+from dataAssociation_v1_2 import associate_landmarks, plotpoints  # Import association and plot functions
 
 # Default folder paths (edit as needed)
 DEFAULT_CSV_FOLDER = r"D:\CSVs"
@@ -37,11 +40,80 @@ SCATTER_ALPHA = 0.7  # Transparency of scatter points
 # Thumbnail settings
 THUMBNAIL_SPACING_METERS = 0.1  # Minimum spacing between thumbnails in meters (~1 cm)
 THUMBNAIL_PIXEL_WIDTH = 200  # Pixel width for thumbnails (for visibility; height computed from aspect ratio)
-SPIRAL_ANGLE_STEP = 0.6  # Angle increment for spiral offset (radians; golden-angle approximation)
-SPIRAL_RADIUS_STEP_FACTOR = 0.5  # Radius step as fraction of spacing (scales with THUMBNAIL_SPACING_METERS)
 
 # Earth approximation constants (for lat/lon to meters conversion)
 METERS_PER_DEG_LAT = 111319.9  # Approximate meters per degree latitude
+
+# ----------------------------------------------------------------------
+# Smallest enclosing circle – renamed to avoid clash with matplotlib.patches.Circle
+# Efficient O(n) expected time (Welzl’s algorithm with randomisation)
+# ----------------------------------------------------------------------
+class SEC_Point:                     # ← renamed from Point
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+class SEC_Circle:                    # ← renamed from Circle
+    def __init__(self, center, radius):
+        self.center = center          # SEC_Point
+        self.radius = radius
+
+def sec_dist(a, b):
+    return math.hypot(a.x - b.x, a.y - b.y)
+
+def sec_is_inside(circle, p):
+    return sec_dist(circle.center, p) <= circle.radius + 1e-9
+
+def sec_circle_from_three(a, b, c):
+    # Circle defined by three points on the boundary
+    bx, by = b.x - a.x, b.y - a.y
+    cx, cy = c.x - a.x, c.y - a.y
+    d = bx * cy - by * cx
+    if abs(d) < 1e-9:                     # collinear → should never happen in Welzl
+        return None
+    b2 = bx*bx + by*by
+    c2 = cx*cx + cy*cy
+    cx = (cy * b2 - by * c2) / (2 * d)
+    cy = (bx * c2 - cx * b2) / (2 * d)
+    center = SEC_Point(a.x + cx, a.y + cy)
+    return SEC_Circle(center, sec_dist(center, a))
+
+def sec_circle_from_two(a, b):
+    center = SEC_Point((a.x + b.x)/2.0, (a.y + b.y)/2.0)
+    return SEC_Circle(center, sec_dist(a, b)/2.0)
+
+def sec_trivial(boundary):
+    if len(boundary) == 0:
+        return SEC_Circle(SEC_Point(0, 0), 0)
+    if len(boundary) == 1:
+        return SEC_Circle(boundary[0], 0)
+    if len(boundary) == 2:
+        return sec_circle_from_two(boundary[0], boundary[1])
+    # three points
+    for i in range(3):
+        for j in range(i+1, 3):
+            c = sec_circle_from_two(boundary[i], boundary[j])
+            if all(sec_is_inside(c, boundary[k]) for k in range(3)):
+                return c
+    return sec_circle_from_three(boundary[0], boundary[1], boundary[2])
+
+def welzl_helper(pts, boundary, n):
+    if n == 0 or len(boundary) == 3:
+        return sec_trivial(boundary)
+    idx = random.randint(0, n-1)
+    pts[idx], pts[n-1] = pts[n-1], pts[idx]
+    c = welzl_helper(pts, boundary, n-1)
+    if sec_is_inside(c, pts[n-1]):
+        return c
+    return welzl_helper(pts, boundary + [pts[n-1]], n-1)
+
+def smallest_enclosing_circle(points):
+    """Entry point – returns an SEC_Circle (center, radius)"""
+    if not points:
+        return SEC_Circle(SEC_Point(0, 0), 0)
+    pts_copy = points[:]
+    random.shuffle(pts_copy)
+    return welzl_helper(pts_copy, [], len(pts_copy))
 
 class FlowerViewer(tk.Tk):
     def __init__(self):
@@ -61,6 +133,10 @@ class FlowerViewer(tk.Tk):
         self.selected_items = []  # To store the selected display texts for plotting
         self.flower_locations = []  # To store flower positions with photo indices
         self.mode = tk.StringVar(value='session')  # Default to 'session' mode
+        self.point_uncertainty_list = []  # New: Pre-parsed list for associations (efficient reuse)
+        self.association_done = False
+        self.mu = None
+        self.allpoints = None
         
         # Create main UI elements
         self.create_main_ui()
@@ -164,6 +240,11 @@ class FlowerViewer(tk.Tk):
         self.plot_button.pack(pady=10)
         self.plot_button.config(state=tk.DISABLED)  # Disabled until data loaded
 
+        # Associations button (initially disabled, enabled after load)
+        self.assoc_button = ttk.Button(items_frame, text="Run Association", command=self.run_association)
+        self.assoc_button.pack(pady=10)
+        self.assoc_button.config(state=tk.DISABLED)
+
     def browse_csv_folder(self):
         """
         Prompts the user to select the CSV folder.
@@ -264,11 +345,9 @@ class FlowerViewer(tk.Tk):
     
     def load_data(self):
         """
-        Loads the selected CSVs (based on mode) into a single DataFrame.
-        Handles large datasets by reading CSVs one-by-one (pandas is memory-efficient for this scale).
-        Updates the status label on success (no pop-up).
-        Enables the plot button after successful load.
-        Stores selected display texts for plotting.
+        Loads the selected CSV files into a single DataFrame, filters for flowers, parses GPS points efficiently,
+        and pre-computes self.point_unc_list for associations (to avoid repetition on large datasets).
+        Enables plot and associations buttons after successful load.
         """
         selected_indices = self.listbox.curselection()
         if not selected_indices:
@@ -283,19 +362,54 @@ class FlowerViewer(tk.Tk):
         for file_name in selected_files:
             file = Path(self.csv_folder) / file_name
             # Read CSV; low_memory=False for large files with mixed types
-            df = pd.read_csv(file, low_memory=False)
-            dfs.append(df)
+            try:
+                df = pd.read_csv(file, low_memory=False)
+                dfs.append(df)
+            except Exception as e:
+                messagebox.showerror("Load Error", f'Failed to load {file}: {e}')
         
         # Concatenate DataFrames (efficient for tens of thousands of rows)
         self.data = pd.concat(dfs, ignore_index=True)
-        
         num_photos = len(self.data)
+
+        # Parse 'GPSpoint' to 'GPSparsed' (np.array of [lat, lon] points) - done once here
+        def convertGPS(GPSpoint):
+            if pd.isna(GPSpoint):
+                return np.array([])  # Empty for NaN
+            try:
+                GPSpoint = ast.literal_eval(GPSpoint)  # Parse to list of strings
+                return np.array([[float(x) for x in item.strip('[]').split()] for item in GPSpoint])  # To (n,2) array
+            except:
+                return np.array([])  # Skip invalid
+
+        self.data['GPSparsed'] = self.data['GPSpoint'].apply(convertGPS)
+
+        # Pre-compute point_uncertainty_list for associations (list of (points_np, unc) - memory-efficient)
+        self.point_uncertainty_list = []
+        for _, row in self.data.iterrows():
+            points = row['GPSparsed']
+            if points.size > 0:  # Skip empty
+                if points.ndim == 1:
+                    points = points.reshape(1, -1)
+                self.point_uncertainty_list.append((points, row['horizontal_accuracy']))
+
         
         # Update status (no pop-up)
         self.update_status(f"Loaded {num_photos} photos from selected {self.mode.get()}s. Ready for viewing/plotting.")
         
         # Enable buttons after data is loaded
-        self.plot_button.config(state=tk.NORMAL)
+        self.plot_button.config(state=tk.NORMAL)  # Enable plot
+        self.assoc_button.config(state=tk.NORMAL)  # Enable associations
+
+    def run_association(self):
+        if not self.point_uncertainty_list:
+            messagebox.showwarning("No Data", "Please load data first.")
+            return
+        start = time.time()
+        self.mu, self.allpoints = associate_landmarks(self.point_uncertainty_list)  # Efficient: vectorized, reuses pre-parsed list
+        self.association_done = True
+        elapsed = time.time() - start
+        self.update_status(f"Data association completed in {elapsed:.2f} seconds. Detected {len(self.mu)} landmarks.")
 
     def plot_flowers(self):
         """
@@ -597,6 +711,16 @@ class FlowerViewer(tk.Tk):
             self.update_status("No images found.")
             return
         
+        # --------------------------------------------------------------
+        # For circle mode: fit the *smallest* enclosing circle to the selected points
+        # --------------------------------------------------------------
+        if self.selection_mode == 'circle' and len(inside_idx) > 0:
+            # Convert selected meter coordinates to SEC_Point objects (fast, only on filtered points)
+            sec_points = [SEC_Point(self.all_x_m[i], self.all_y_m[i]) for i in inside_idx]
+            sec = smallest_enclosing_circle(sec_points)          # ← Welzl result
+            center = (sec.center.x, sec.center.y)                # tuple (x_m, y_m)
+            radius = sec.radius                                   # meters
+
         # Group flowers by photo_idx using defaultdict for efficiency
         photo_flowers = defaultdict(list)
         for idx in inside_idx:
@@ -648,22 +772,119 @@ class FlowerViewer(tk.Tk):
         self.image_ax.set_xlabel("East-West (meters)")
         self.image_ax.set_ylabel("North-South (meters)")
         
-        # Load and place images at centroids, with spread for overlaps
+                # Compute center and dimensions based on the drawn/fitted element (matches plot)
+        if self.selection_mode == 'circle':
+            center_x_m, center_y_m = center  # Now the fitted center
+            center_lat = self.ref_lat + center_y_m / self.meters_per_deg_lat
+            center_lon = self.ref_lon + center_x_m / self.meters_per_deg_lon
+            selection_type = "Circle"
+            additional_info = f"Radius: {radius:.3f} meters\n"  # Now fitted radius
+        else:  # rect
+            center_x_m = (x_min + x_max) / 2  # Tight center (from points)
+            center_y_m = (y_min + y_max) / 2
+            center_lat = self.ref_lat + center_y_m / self.meters_per_deg_lat
+            center_lon = self.ref_lon + center_x_m / self.meters_per_deg_lon
+            width = x_max - x_min  # Tight width
+            height = y_max - y_min  # Tight height
+            selection_type = "Rectangle"
+            additional_info = f"Width: {width:.3f} meters\nHeight: {height:.3f} meters\n"
+
+        def ray_aabb_exit(start, unit_dir, aabb_min, aabb_max):
+            """
+            Computes the exit point of a ray from 'start' (inside AABB) in 'unit_dir' direction.
+            Uses slab method for efficiency (O(1), no iterations).
+            Returns None if no exit (unlikely since start inside and dir normalized).
+            """
+            tmin = np.full(2, -np.inf)
+            tmax = np.full(2, np.inf)
+            for i in range(2):  # x and y dimensions
+                if abs(unit_dir[i]) < 1e-6:  # Parallel to axis
+                    if start[i] < aabb_min[i] or start[i] > aabb_max[i]:
+                        return None  # Outside, no intersection
+                    continue
+                t1 = (aabb_min[i] - start[i]) / unit_dir[i]
+                t2 = (aabb_max[i] - start[i]) / unit_dir[i]
+                tmin[i] = min(t1, t2)
+                tmax[i] = max(t1, t2)
+            t_enter = np.max(tmin)
+            t_exit = np.min(tmax)
+            if t_exit < 0 or t_enter > t_exit:
+                return None
+            # Return exit point (t_exit > 0 since start inside)
+            return start + t_exit * unit_dir
+
+        # Load and place images outside the buffered shape, with radial lines from shape center
         loaded_count = 0
         # Define thumbnail size preserving 1920x1080 aspect ratio (16:9)
-        # Width=300 for good visibility; height computed to maintain ratio
+        # Width=200 for good visibility; height computed to maintain ratio
         # This reduces data size per thumbnail for efficient handling of up to 50 images
         thumb_width = THUMBNAIL_PIXEL_WIDTH
-        thumb_height = round(thumb_width * 1080 / 1920)  # ≈169
+        thumb_height = round(thumb_width * 1080 / 1920)  # ≈113
         thumb_size = (thumb_width, thumb_height)
         self.image_artists = []  # To store artists and their paths for clicking
         self.lines = []  # To store connecting lines
         self.dots = []  # To store centroid dots
-        positions = []  # To track thumbnail positions for overlap check
+        positions = []  # To track thumbnail positions (np arrays) for overlap check
+
+        # Collect photos with timestamps for sorting (efficient O(m log m), m=photos << points)
+        photos = []
         for photo_idx, pos_list in photo_flowers.items():
+            row = self.data.iloc[photo_idx]
+            ts = row['timestamp']  # str, sorts lexicographically due to YYYYMMDD_HHMMSS format
+            photos.append((ts, photo_idx))
+        photos.sort(key=lambda x: x[0])  # Earliest first
+
+        # Shape center (from earlier computation)
+        shape_center = np.array([center_x_m, center_y_m])
+
+        # Buffered shape params (reuse THUMBNAIL_SPACING_METERS as the 0.1m buffer)
+        buf = THUMBNAIL_SPACING_METERS
+        if self.selection_mode == 'circle':
+            buf_radius = radius + buf
+        else:  # rect
+            buf_x_min = x_min - buf
+            buf_x_max = x_max + buf
+            buf_y_min = y_min - buf
+            buf_y_max = y_max + buf
+            buf_min = np.array([buf_x_min, buf_y_min])
+            buf_max = np.array([buf_x_max, buf_y_max])
+
+        for ts, photo_idx in photos:
+            pos_list = photo_flowers[photo_idx]
             pos_arr = np.array(pos_list)
-            centroid_x = np.mean(pos_arr[:, 0])
-            centroid_y = np.mean(pos_arr[:, 1])
+            centroid = np.mean(pos_arr, axis=0)
+            dir_vec = centroid - shape_center
+            norm = np.linalg.norm(dir_vec)
+            if norm < 1e-6:
+                unit_dir = np.array([1.0, 0.0])  # Arbitrary direction if at center
+            else:
+                unit_dir = dir_vec / norm
+            
+            # Compute initial exit point on buffered boundary (O(1))
+            if self.selection_mode == 'circle':
+                exit_point = shape_center + unit_dir * buf_radius
+            else:
+                exit_point = ray_aabb_exit(shape_center, unit_dir, buf_min, buf_max)
+                if exit_point is None:  # Fallback (unlikely)
+                    exit_point = centroid + unit_dir * buf
+            
+            # Start at exit_point, then move further if overlaps (incremental, efficient for small m)
+            pos = exit_point.copy()
+            step = THUMBNAIL_SPACING_METERS
+            while True:
+                overlap = False
+                for prev_pos in positions:
+                    dist = np.linalg.norm(pos - prev_pos)
+                    if dist < THUMBNAIL_SPACING_METERS:
+                        overlap = True
+                        break
+                if not overlap:
+                    break
+                # Move later timestamp outward further
+                pos += unit_dir * step
+            
+            pos_x, pos_y = pos
+            positions.append(pos)  # Store as np array
             
             row = self.data.iloc[photo_idx]
             image_path = Path(self.image_folder) / f"{row['timestamp'].rstrip('Z')}_{row['camera']}.jpg"
@@ -675,40 +896,36 @@ class FlowerViewer(tk.Tk):
                 img_pil = Image.open(image_path).resize(thumb_size, Image.Resampling.LANCZOS)
                 img_arr = np.array(img_pil)
                 # Initial position at centroid
-                pos_x, pos_y = centroid_x, centroid_y
-                # Check for overlap with existing positions (efficient vectorized distance)
-                if positions:
-                    dists = np.sqrt((np.array(positions) - np.array([pos_x, pos_y]))**2).sum(axis=1)
-                    if np.any(dists < THUMBNAIL_SPACING_METERS):
-                        # Offset in spiral pattern (efficient incremental search)
-                        angle = 0
-                        r = THUMBNAIL_SPACING_METERS   # Start with threshold as radius
-                        while True:
-                            offset_x = r * math.cos(angle)
-                            offset_y = r * math.sin(angle)
-                            test_x = centroid_x + offset_x
-                            test_y = centroid_y + offset_y
-                            dists = np.sqrt((np.array(positions) - np.array([test_x, test_y]))**2).sum(axis=1)
-                            if np.all(dists >= THUMBNAIL_SPACING_METERS):
-                                pos_x, pos_y = test_x, test_y
-                                break
-                            angle += SPIRAL_ANGLE_STEP
-                            r += THUMBNAIL_SPACING_METERS * SPIRAL_RADIUS_STEP_FACTOR   # Scale step with threshold
-                positions.append((pos_x, pos_y))
                 imagebox = OffsetImage(img_arr, zoom=1)
                 ab = AnnotationBbox(imagebox, (pos_x, pos_y), frameon=False)
                 self.image_ax.add_artist(ab)
                 self.image_artists.append((ab, str(image_path)))
                 loaded_count += 1
                 # Add dot at true centroid
-                dot, = self.image_ax.plot(centroid_x, centroid_y, 'ro', markersize=DOT_MARKER_SIZE)
+                dot, = self.image_ax.plot(centroid[0], centroid[1], 'ro', markersize=DOT_MARKER_SIZE)
                 self.dots.append(dot)
                 # Add line from centroid to thumbnail position
-                line, = self.image_ax.plot([centroid_x, pos_x], [centroid_y, pos_y], 'k-', linewidth=LINE_WIDTH)
+                line, = self.image_ax.plot([centroid[0], pos_x], [centroid[1], pos_y], 'k-', linewidth=LINE_WIDTH)
                 self.lines.append(line)
             except Exception:
                 continue  # Skip invalid images
         
+        # Expand plot limits to include thumbnails (efficient vectorized min/max)
+        if positions:
+            thumb_x = np.array([p[0] for p in positions])
+            thumb_y = np.array([p[1] for p in positions])
+            all_x = np.concatenate((self.all_x_m[inside_idx], thumb_x))
+            all_y = np.concatenate((self.all_y_m[inside_idx], thumb_y))
+            x_min = all_x.min()
+            x_max = all_x.max()
+            y_min = all_y.min()
+            y_max = all_y.max()
+            x_range = x_max - x_min
+            y_range = y_max - y_min
+            buffer = BUFFER_FACTOR * max(x_range, y_range)
+            self.image_ax.set_xlim(x_min - buffer, x_max + buffer)
+            self.image_ax.set_ylim(y_min - buffer, y_max + buffer)
+
         self.image_ax.set_title(f"Images in Selected Area ({loaded_count} images)")
         
         if loaded_count == 0:
@@ -734,14 +951,7 @@ class FlowerViewer(tk.Tk):
         
         # Connect click event for opening full image
         self.image_canvas.mpl_connect('button_press_event', self.on_image_click)
-        
-        # Enable dragging of thumbnails
-        self.dragged_ab = None
-        self.drag_index = None
-        self.cid_pick = self.image_canvas.mpl_connect('pick_event', self.on_pick_thumbnail)
-        self.cid_release = self.image_canvas.mpl_connect('button_release_event', self.on_release_thumbnail)
-        self.cid_motion = self.image_canvas.mpl_connect('motion_notify_event', self.on_drag_thumbnail)
-        
+
         # Bind <Configure> event for dynamic resizing
         def on_image_resize(event):
             new_width = event.width
@@ -798,32 +1008,12 @@ class FlowerViewer(tk.Tk):
                     continue  # Skip if unknown camera
                 shutil.copy2(src_path, dst_sub)
         
-        # Compute center GPS and meters
-        if self.selection_mode == 'circle':
-            center_x_m, center_y_m = center
-            center_lat = self.ref_lat + center_y_m / self.meters_per_deg_lat
-            center_lon = self.ref_lon + center_x_m / self.meters_per_deg_lon
-            selection_type = "Circle"
-            additional_info = f"Radius: {radius:.2f} meters\n"
-        else:  # rect
-            x1, y1 = corners[0]
-            x2, y2 = corners[1]
-            center_x_m = (x1 + x2) / 2
-            center_y_m = (y1 + y2) / 2
-            center_lat = self.ref_lat + center_y_m / self.meters_per_deg_lat
-            center_lon = self.ref_lon + center_x_m / self.meters_per_deg_lon
-            # These line use the user-defined box. Without them, dimensions are actual points range
-            # width = abs(x2 - x1)
-            # height = abs(y2 - y1)
-            selection_type = "Rectangle"
-            additional_info = f"Width: {width:.2f} meters\nHeight: {height:.2f} meters\n"
-        
         # Write info.txt with numbered name
         info_path = temp_folder / f'{temp_num}_info.txt'
         with info_path.open('w') as f:
             f.write(f"Selection Type: {selection_type}\n")
             f.write(f"Center GPS: lat={center_lat:.8f}, lon={center_lon:.8f}\n")
-            f.write(f"Center Meters: x={center_x_m:.2f} (East-West), y={center_y_m:.2f} (North-South)\n")
+            f.write(f"Center Meters: x={center_x_m:.2f} (from West), y={center_y_m:.2f} (from South)\n")
             f.write(additional_info)
             f.write(f"Number of Images: {loaded_count}\n")
             f.write(f"Sessions: {', '.join(self.selected_items)}\n")
@@ -832,8 +1022,6 @@ class FlowerViewer(tk.Tk):
         os.startfile(str(temp_folder))
         
         self.update_status(f"Displayed {loaded_count} images. Full views in {temp_folder.name} (opened in Photos app).")
-
-
 
     def on_pick_thumbnail(self, event):
         """
@@ -845,29 +1033,6 @@ class FlowerViewer(tk.Tk):
             self.drag_start = (event.mouseevent.xdata, event.mouseevent.ydata)
             # Find index to update the correct line
             self.drag_index = next(i for i, (ab, _) in enumerate(self.image_artists) if ab == self.dragged_ab)
-
-    def on_drag_thumbnail(self, event):
-        """
-        Handles dragging the thumbnail and updating the connecting line.
-        """
-        if self.dragged_ab and event.xdata and event.ydata:
-            dx = event.xdata - self.drag_start[0]
-            dy = event.ydata - self.drag_start[1]
-            current_xy = list(self.dragged_ab.xy)
-            new_xy = (current_xy[0] + dx, current_xy[1] + dy)
-            self.dragged_ab.xy = new_xy
-            # Update line
-            line = self.lines[self.drag_index]
-            dot = self.dots[self.drag_index]
-            line.set_data([dot.get_xdata()[0], new_xy[0]], [dot.get_ydata()[0], new_xy[1]])
-            self.drag_start = (event.xdata, event.ydata)
-            self.image_canvas.draw_idle()
-
-    def on_release_thumbnail(self, event):
-        """
-        Handles release after dragging a thumbnail.
-        """
-        self.dragged_ab = None
 
     def get_temp_folder(self):
         """
