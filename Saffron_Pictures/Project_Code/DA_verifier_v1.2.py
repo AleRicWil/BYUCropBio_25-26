@@ -26,7 +26,7 @@ DEFAULT_IMAGE_FOLDER = r"D:\boxed"
 NUM_TEMP_FOLDERS = 5  # Number of rotating temp folders (temp_00 to temp_04)
 
 # Data Association settings
-MAHALONOBIS_THRESHOLD = 3.0
+MAHALONOBIS_THRESHOLD = 2.0
 
 # Plot settings
 BASE_FIGURE_SIZE = 8.0  # Base size for figure dimensions (scales with aspect ratio)
