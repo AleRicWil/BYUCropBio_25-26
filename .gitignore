@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 fullgpscsv.csv
+your_data_with_runs.csv
