@@ -31,10 +31,10 @@ MAHALONOBIS_THRESHOLD = 2.0
 # Plot settings
 BASE_FIGURE_SIZE = 8.0  # Base size for figure dimensions (scales with aspect ratio)
 BUFFER_FACTOR = 0.1  # Buffer around data range as fraction of max range
-LEFT_MARGIN = 0.036  # Left subplot margin (increased for labels)
-RIGHT_MARGIN = 0.995  # Right subplot margin
-BOTTOM_MARGIN = 0.03  # Bottom subplot margin (increased for labels)
-TOP_MARGIN = 0.97  # Top subplot margin
+LEFT_MARGIN = 0.1  # Left subplot margin (increased for labels)
+RIGHT_MARGIN = 0.95  # Right subplot margin
+BOTTOM_MARGIN = 0.1  # Bottom subplot margin (increased for labels)
+TOP_MARGIN = 0.9  # Top subplot margin
 DOT_MARKER_SIZE = 5  # Size of red centroid dots
 LINE_WIDTH = 1  # Width of connecting lines
 SCATTER_MARKER_SIZE = 10  # Size of scatter points in main plot
@@ -543,6 +543,7 @@ class FlowerViewer(tk.Tk):
             multi_assoc = frequency[idxs] > 1
             self.ax.scatter(self.all_x_m[multi_assoc], self.all_y_m[multi_assoc], 
                             s=int(SCATTER_MARKER_SIZE/2), alpha=SCATTER_ALPHA*0.5, c='blue', label='Flower Locations')
+            print('Locations: ', len(self.all_x_m), 'Multi_obs: ', len(mu_x[multi_obs]), 'Single_obs: ', len(mu_x[single_obs]))
             
             # Plot associations as a LineCollection for efficiency with many lines
             starts = np.column_stack((self.all_x_m, self.all_y_m))
