@@ -119,13 +119,15 @@ def associate_landmarks(input_data, MAH_threshold=8.0):
 
     # Core association loop (efficient for large lists)
     for points, unc in point_unc_list:
+        # Measured from field photo plotter, not from reported GPS accuracy, which is the value of unc
+        unc_x = 0.044   # longitude, EW (X) range of flower location estimates in meters
+        unc_y = 0.111   # latitude, NS (Y) range of flower location estimates in meters
         for point in points:  # Efficient: n small per entry
             lat = point[0]
-            # Covariance in degrees^2 (scalar ops for speed)
-            sigma_lat = unc / METERS_PER_DEG_LAT
-            cos_lat = np.cos(np.deg2rad(lat))
-            sigma_lon = unc / (METERS_PER_DEG_LAT * cos_lat)
-            Sigma_bar = np.diag([sigma_lat**2, sigma_lon**2])
+            # Covariance in latitude/longitude degrees^2 (scalar ops for speed)
+            sigma_lat = unc_y / METERS_PER_DEG_LAT
+            sigma_lon = unc_x / (METERS_PER_DEG_LAT * np.cos(np.deg2rad(lat)))
+            Sigma_bar = np.diag([sigma_lat**2, sigma_lon**2])   # latitude is NS (y), longitude is EW (x)
             
             association = associateData(point, mu, Sigma_bar, thresh=MAH_threshold)
             if association[0] == -1:

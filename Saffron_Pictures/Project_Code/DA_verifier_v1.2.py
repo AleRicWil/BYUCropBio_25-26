@@ -26,7 +26,7 @@ DEFAULT_IMAGE_FOLDER = r"D:\boxed"
 NUM_TEMP_FOLDERS = 5  # Number of rotating temp folders (temp_00 to temp_04)
 
 # Data Association settings
-MAHALONOBIS_THRESHOLD = 8.0
+MAHALONOBIS_THRESHOLD = 3.0
 
 # Plot settings
 BASE_FIGURE_SIZE = 8.0  # Base size for figure dimensions (scales with aspect ratio)
@@ -396,9 +396,9 @@ class FlowerViewer(tk.Tk):
                     points = points.reshape(1, -1)
                 self.point_uncertainty_list.append((points, row['horizontal_accuracy']))
 
-        
         # Update status (no pop-up)
-        self.update_status(f"Loaded {num_photos} photos from selected {self.mode.get()}s. Ready for viewing/plotting.")
+        self.update_status(f"Loaded {num_photos} photos from selected {self.mode.get()}s. Ready for viewing/plotting. No associations.")
+        self.association_done = False
         
         # Enable buttons after data is loaded
         self.plot_button.config(state=tk.NORMAL)  # Enable plot
@@ -516,7 +516,8 @@ class FlowerViewer(tk.Tk):
         self.ax = self.fig.add_subplot(111)
         
         # Scatter plot
-        self.ax.scatter(self.all_x_m, self.all_y_m, s=SCATTER_MARKER_SIZE, alpha=SCATTER_ALPHA, label='Single-obs Landmark')
+        if not self.association_done:
+            self.ax.scatter(self.all_x_m, self.all_y_m, s=SCATTER_MARKER_SIZE, alpha=SCATTER_ALPHA, label='Flower Location')
 
         # If association done, add landmarks and lines (efficient, vectorized)
         if self.association_done:
@@ -535,8 +536,13 @@ class FlowerViewer(tk.Tk):
             # Plot landmarks: separate scatters for different colors/labels
             multi_obs = frequency > 1
             self.ax.scatter(mu_x[multi_obs], mu_y[multi_obs], s=SCATTER_MARKER_SIZE*2, c='red', label='Multi-obs Landmark')
-            # single_obs = frequency == 1
-            # self.ax.scatter(mu_x[single_obs], mu_y[single_obs], s=10, c='orange', marker='x', label='Single-obs Landmark')
+            single_obs = frequency == 1
+            self.ax.scatter(mu_x[single_obs], mu_y[single_obs], s=SCATTER_MARKER_SIZE, c='green', label='Single-obs Landmark')
+
+            # Plot subset of flower locations (only those associated with multi-obs landmarks so the ones with single-obs don't overlap from scatter above)
+            multi_assoc = frequency[idxs] > 1
+            self.ax.scatter(self.all_x_m[multi_assoc], self.all_y_m[multi_assoc], 
+                            s=int(SCATTER_MARKER_SIZE/2), alpha=SCATTER_ALPHA*0.5, c='blue', label='Flower Locations')
             
             # Plot associations as a LineCollection for efficiency with many lines
             starts = np.column_stack((self.all_x_m, self.all_y_m))
